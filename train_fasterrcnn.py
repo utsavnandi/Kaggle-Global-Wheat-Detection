@@ -23,6 +23,10 @@ from ranger import Ranger
 
 import neptune
 
+from getpass import getpass
+from google.colab import auth
+from google.cloud import storage
+
 from dataset import WheatDatasetFasterRCNN, collate_fn
 from metrics import calculate_image_precision
 from models import get_model
@@ -36,16 +40,6 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-seed_everything(43)
-
-DIR_INPUT = "./data"
-DIR_TRAIN = f"{DIR_INPUT}/train"
-DIR_TEST = f"{DIR_INPUT}/test"
-device = (
-    torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-)
 
 
 def get_training_datasets(train_df, valid_df):
@@ -150,6 +144,27 @@ def val_one_epoch(model, loader):
     return np.array(validation_image_precisions).mean()
 
 
+def upload_blob(
+    source_file_name, destination_blob_name,
+):
+    """Uploads a file to the bucket."""
+    global bucket_name, project_id
+    storage_client = storage.Client(project=project_id)
+    bucket = storage_client.bucket(bucket_name)
+    dt_now = datetime.datetime.now().strftime("%d_%B")
+    destination_blob_name = (
+        "global-wheat-detection/" + dt_now + "/" + destination_blob_name
+    )
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_filename(source_file_name)
+    print(
+        "File {} uploaded to {}.".format(
+            source_file_name, destination_blob_name
+        )
+    )
+    print("uploaded blob name: ", destination_blob_name)
+
+
 def save_upload(
     model, optimizer, epoch, scheduler, val_metric, exp_name, fold=None
 ):
@@ -211,14 +226,6 @@ def train_job(
         )
     best_score = 0.0
     start_epoch = 0
-
-    # sampler
-    # labels_vcount = train_df['folds'].value_counts()
-    # class_counts = [label_count.astype(np.float32) for label_count in labels_vcount)]
-    # num_samples = sum(class_counts)
-    # class_weights = [num_samples/class_counts[i] for i in range(len(class_counts))]
-    # weights = [class_weights[train_df['folds'].values[i]] for i in range(int(num_samples))]
-    # sampler = WeightedRandomSampler(torch.DoubleTensor(weights), int(num_samples))
 
     datasets = get_training_datasets(train_df, valid_df)
     train_loader = DataLoader(
@@ -308,6 +315,27 @@ def train_job(
 
     neptune.stop()
 
+
+seed_everything(43)
+
+NEPTUNE_API_TOKEN = getpass(prompt="Enter neptune api token: ")
+project_id = getpass(prompt="enter gcs project id: ")
+bucket_name = getpass(prompt="enter gcs bucketname: ")
+
+if NEPTUNE_API_TOKEN != "":
+    os.environ["NEPTUNE_API_TOKEN"] = NEPTUNE_API_TOKEN
+    log = True
+else:
+    log = False
+
+auth.authenticate_user()
+
+DIR_INPUT = "./data"
+DIR_TRAIN = f"{DIR_INPUT}/train"
+DIR_TEST = f"{DIR_INPUT}/test"
+device = (
+    torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+)
 
 train_df = pd.read_csv("./train_df.csv")
 valid_df = pd.read_csv("./valid_df.csv")

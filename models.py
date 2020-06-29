@@ -7,23 +7,23 @@ from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 from torchvision.models.detection.backbone_utils import BackboneWithFPN
 
 import timm
+from effdet import (
+    get_efficientdet_config,
+    EfficientDet,
+    create_model,
+    DetBenchTrain,
+    DetBenchPredict,
+)
+from effdet.efficientdet import HeadNet
+
+IMG_SIZE = 1024
 
 
 def timm_resnet_fpn_backbone(
-    backbone_name, pretrained=True, trainable_layers=3
+    backbone_name, pretrained=True, trainable_layers=None
 ):
+    '''Constructs a fpn backbone for fasterrcnn'''
     backbone = timm.create_model(backbone_name, pretrained=pretrained)
-
-    # select layers that wont be frozen
-    assert trainable_layers <= 5 and trainable_layers >= 0
-    layers_to_train = ["layer4", "layer3", "layer2", "layer1", "conv1"][
-        :trainable_layers
-    ]
-    # freeze layers only if pretrained backbone is used
-    for name, parameter in backbone.named_parameters():
-        if all([not name.startswith(layer) for layer in layers_to_train]):
-            parameter.requires_grad_(False)
-            print(f"frozen {name}")
 
     return_layers = {
         "layer1": "0",
@@ -85,10 +85,18 @@ def get_model(
     return model
 
 
-def unfreeze_all_layers(model):
-    layers_to_train = ["layer4", "layer3", "layer2", "layer1", "conv1"][:3]
-    for name, parameter in model.backbone.named_parameters():
-        if all([not name.startswith(layer) for layer in layers_to_train]):
-            parameter.requires_grad_(True)
-    print(f"unfrozen all layers")
-    return model
+def get_train_model(config_name="tf_efficientdet_d0", model_ckpt=None):
+    '''Get EfficientDet Bench Train model'''
+    config = get_efficientdet_config(config_name)
+    model = EfficientDet(config, pretrained_backbone=True)
+
+    config.num_classes = 1
+    config.image_size = IMG_SIZE
+    model.class_net = HeadNet(
+        config,
+        num_outputs=config.num_classes,
+        norm_kwargs=dict(eps=0.001, momentum=0.01),
+    )
+    if model_ckpt is not None:
+        model.load_state_dict(torch.load(model_ckpt)["model_state_dict"])
+    return DetBenchTrain(model, config)
