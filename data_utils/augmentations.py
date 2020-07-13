@@ -1,7 +1,7 @@
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 
-IMG_SIZE = 1024
+IMG_SIZE = 320
 
 
 # Albumentations

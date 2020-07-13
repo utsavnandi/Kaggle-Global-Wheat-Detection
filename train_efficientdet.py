@@ -19,13 +19,13 @@ from torch.cuda.amp import GradScaler
 from ranger import Ranger
 
 from getpass import getpass
-from google.colab import auth
-from google.cloud import storage
+# from google.colab import auth
+# from google.cloud import storage
 
-import neptune
+# import neptune
 
 from dataset import WheatDatasetEfficientDet, collate_fn
-from metrics import calculate_image_precision
+from metrics import calculate_image_precision, iou_thresholds
 from models import get_train_model
 from augmentations import get_train_transform, get_valid_transform
 
@@ -233,12 +233,12 @@ def save_upload(
     MODEL_PATH = NAME
     torch.save({"model_state_dict": bench.model.state_dict(),}, MODEL_PATH)
     print(f"Saved ckpt for epoch {epoch+1}")
-    upload_blob(MODEL_PATH, NAME)
-    print(f"Uploaded ckpt for epoch {epoch+1}")
+    # upload_blob(MODEL_PATH, NAME)
+    # print(f"Uploaded ckpt for epoch {epoch+1}")
 
 
 def train_job(model_name, train_df, valid_df, model_ckpt=None, log=True):
-    # exp_name = FLAGS['exp_name']
+
     if log:
         neptune.set_project("utsav/wheat-det")
         neptune.init("utsav/wheat-det", api_token=NEPTUNE_API_TOKEN)
@@ -285,13 +285,10 @@ def train_job(model_name, train_df, valid_df, model_ckpt=None, log=True):
     scheduler = lr_scheduler.ReduceLROnPlateau(
         optimizer,
         "min",
-        factor=0.75,
+        factor=0.5,
         verbose=True,
         patience=FLAGS["scheduler_pat"],
     )
-
-    if model_ckpt is not None:
-        checkpoint = torch.load(model_ckpt)
 
     scaler = GradScaler()
     es = 0
@@ -350,20 +347,20 @@ def train_job(model_name, train_df, valid_df, model_ckpt=None, log=True):
 
 FLAGS = {}
 FLAGS["num_workers"] = 4
-FLAGS["batch_size"] = 1
+FLAGS["batch_size"] = 2
 FLAGS["accumulation_steps"] = 16
-FLAGS["learning_rate"] = 1e-3
+FLAGS["learning_rate"] = 2e-3
 FLAGS["num_epochs"] = 60
-FLAGS["weight_decay"] = 5e-3
-FLAGS["exp_name"] = "tf_efficientdet_d5"
+FLAGS["weight_decay"] = 3e-3
+FLAGS["exp_name"] = "tf_efficientdet_d0"
 FLAGS["fold"] = "0, 3, 5"
 # FLAGS['early_stop_count'] = 9
 FLAGS["scheduler_pat"] = 7
 exp_description = """
-tf_efficientdet_d5,
+tf_efficientdet_d0,
 Ranger, ReduceLROnPlateau
 New Aug + Cutmix,
-imsize 1024
+imsize 512
 """
 seed_everything(43)
 
@@ -389,7 +386,7 @@ if NEPTUNE_API_TOKEN != "":
 else:
     log = False
 
-auth.authenticate_user()
+# auth.authenticate_user()
 
 
 train_job("tf_efficientdet_d5", train_df, valid_df, log=False)

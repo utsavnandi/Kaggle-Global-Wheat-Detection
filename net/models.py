@@ -10,7 +10,7 @@ import timm
 from effdet import (
     get_efficientdet_config,
     EfficientDet,
-    create_model,
+    # create_model,
     DetBenchTrain,
     DetBenchPredict,
 )
