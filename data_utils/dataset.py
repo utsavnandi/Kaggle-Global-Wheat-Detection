@@ -10,8 +10,6 @@ DIR_INPUT = "./data"
 DIR_TRAIN = f"{DIR_INPUT}/train"
 DIR_TEST = f"{DIR_INPUT}/test"
 
-IMG_SIZE = 320
-
 
 class WheatDatasetFasterRCNN(Dataset):
     def __init__(self, dataframe, image_dir, isValid=True, transforms=None):
@@ -141,13 +139,58 @@ class WheatDatasetFasterRCNN(Dataset):
 
         return mixup_image, mixup_target
 
+    def cutout(self, image, boxes):
+        """cutout augmentations"""
+        h, w = image.shape[:2]
+        # create random masks with random number of items
+        scale_lim = random.randint(3, 6)
+        scales_stacked = [
+            [0.5 / (2 ** x)] * (2 ** x) for x in range(0, scale_lim, 1)
+        ]
+        scales = [item for sublist in scales_stacked for item in sublist]
+        for s in scales:
+            mask_h = random.randint(1, int(h * s))
+            mask_w = random.randint(1, int(w * s))
+            # cutout box
+            xmin = max(0, random.randint(0, w) - mask_w // 2)
+            ymin = max(0, random.randint(0, h) - mask_h // 2)
+            xmax = min(w, xmin + mask_w)
+            ymax = min(h, ymin + mask_h)
+            # apply cutout
+            image[ymin:ymax, xmin:xmax] = [
+                random.randint(48, 224) for _ in range(3)
+            ]
+            # clean labels
+            if len(boxes) and s > 0.03:
+                boxes = np.delete(
+                    boxes,
+                    np.where(
+                        ((boxes[:, 0] > xmin) & (boxes[:, 2] < xmax))
+                        & ((boxes[:, 1] > ymin) & (boxes[:, 3] < ymax))
+                    ),
+                    0,
+                )
+                cutout_ords = np.array([xmin, ymin, xmax, ymax])
+                boxes = filter_boxes(boxes, cutout_ords)  # <-- 0.33 set here
+                boxes = boxes[
+                    np.where(
+                        (boxes[:, 2] - boxes[:, 0])
+                        * (boxes[:, 3] - boxes[:, 1])
+                        > 64
+                    )
+                ]
+
+        return image, boxes
+
     def get_rand_index(self):
         rand_index = np.random.choice([*range(0, self.image_ids.shape[0])])
         return rand_index
 
 
 class WheatDatasetEfficientDet(Dataset):
-    def __init__(self, dataframe, image_dir, isValid=True, transforms=None):
+    def __init__(
+        self, dataframe, img_size, image_dir, isValid=True, transforms=None
+    ):
         super().__init__()
 
         self.image_ids = dataframe["image_id"].unique()
@@ -155,6 +198,7 @@ class WheatDatasetEfficientDet(Dataset):
         self.image_dir = image_dir
         self.transforms = transforms
         self.isValid = isValid
+        self.img_size = img_size
 
     def __len__(self) -> int:
         return self.image_ids.shape[0]
@@ -167,23 +211,24 @@ class WheatDatasetEfficientDet(Dataset):
             if rng < 0.33:
                 image, boxes, image_id = self.load_image(index)
             elif 0.33 < rng < 0.66:
-                image, boxes, image_id = self.load_image(index)
-                image, boxes = self.cutmix(image, boxes)
+                image, boxes, image_id = self.cutmix(index)
             else:
-                image, boxes = self.load_stitch(index)
-                image_id = "mosaic"
+                image, boxes, image_id = self.load_stitch(index)
+            rng = np.random.random()
+            if rng < 0.2:
+                image, boxes = self.cutout(image, boxes)
 
         target = {}
         target["bbox"] = boxes
         target["img_id"] = torch.tensor([index])
         target["cls"] = torch.ones((boxes.shape[0],), dtype=torch.int64)
         target["img_size"] = torch.tensor(
-            [IMG_SIZE, IMG_SIZE], dtype=torch.float32
+            [self.img_size, self.img_size], dtype=torch.float32
         )
         target["img_scale"] = torch.ones((1,), dtype=torch.float32)
 
-        if self.transforms:
-            for i in range(10):
+        try:
+            if self.transforms:
                 sample = self.transforms(
                     **{
                         "image": image,
@@ -191,16 +236,18 @@ class WheatDatasetEfficientDet(Dataset):
                         "labels": target["cls"],
                     }
                 )
-                if len(sample["bboxes"]) > 0:
-                    image = sample["image"]
-                    target["bbox"] = torch.stack(
-                        tuple(map(torch.tensor, zip(*sample["bboxes"])))
-                    ).permute(1, 0)
-                    target["bbox"][:, [0, 1, 2, 3]] = target["bbox"][
-                        :, [1, 0, 3, 2]
-                    ]  # yxyx
-                    target["cls"] = torch.stack(sample["labels"])
-                    break
+                image = sample["image"]
+                target["bbox"] = torch.stack(
+                    tuple(map(torch.tensor, zip(*sample["bboxes"])))
+                ).permute(1, 0)
+                target["bbox"][:, [0, 1, 2, 3]] = target["bbox"][
+                    :, [1, 0, 3, 2]
+                ]  # yxyx
+                target["cls"] = torch.stack(sample["labels"])
+        except Exception as e:
+            print(e)
+            print("error at image_id: ", image_id)
+            return
 
         return image, target, image_id
 
@@ -216,8 +263,9 @@ class WheatDatasetEfficientDet(Dataset):
         boxes[:, 3] = boxes[:, 1] + boxes[:, 3]
         return image, boxes, image_id
 
-    def cutmix(self, image_1, boxes_1):
+    def cutmix(self, index):
         """cutmix augmentation"""
+        image_1, boxes_1, image_id_1 = self.load_image(index)
         rand_index = self.get_rand_index()
         image_2, boxes_2, _ = self.load_image(rand_index)
         imsize = image_1.shape[0]
@@ -271,11 +319,11 @@ class WheatDatasetEfficientDet(Dataset):
         mixup_target = np.concatenate((boxes_1, mixup_target))
         mixup_image[y1:y2, x1:x2] = image_2[y1:y2, x1:x2]
 
-        return mixup_image, mixup_target
+        return mixup_image, mixup_target, image_id_1
 
-    def cutout(self, image_1, boxes_1):
+    def cutout(self, image, boxes):
         """cutout augmentations"""
-        h, w = image_1.shape[:2]
+        h, w = image.shape[:2]
         # create random masks with random number of items
         scale_lim = random.randint(3, 6)
         scales_stacked = [
@@ -291,39 +339,38 @@ class WheatDatasetEfficientDet(Dataset):
             xmax = min(w, xmin + mask_w)
             ymax = min(h, ymin + mask_h)
             # apply cutout
-            image_1[ymin:ymax, xmin:xmax] = [
+            image[ymin:ymax, xmin:xmax] = [
                 random.randint(48, 224) for _ in range(3)
             ]
             # clean labels
-            if len(boxes_1) and s > 0.03:
-                boxes_1 = np.delete(
-                    boxes_1,
+            if len(boxes) and s > 0.03:
+                boxes = np.delete(
+                    boxes,
                     np.where(
-                        ((boxes_1[:, 0] > xmin) & (boxes_1[:, 2] < xmax))
-                        & ((boxes_1[:, 1] > ymin) & (boxes_1[:, 3] < ymax))
+                        ((boxes[:, 0] > xmin) & (boxes[:, 2] < xmax))
+                        & ((boxes[:, 1] > ymin) & (boxes[:, 3] < ymax))
                     ),
                     0,
                 )
                 cutout_ords = np.array([xmin, ymin, xmax, ymax])
-                boxes_1 = filter_boxes(
-                    boxes_1, cutout_ords
-                )  # <-- 0.33 set here
-                boxes_1 = boxes_1[
+                boxes = filter_boxes(boxes, cutout_ords)  # <-- 0.33 set here
+                boxes = boxes[
                     np.where(
-                        (boxes_1[:, 2] - boxes_1[:, 0])
-                        * (boxes_1[:, 3] - boxes_1[:, 1])
+                        (boxes[:, 2] - boxes[:, 0])
+                        * (boxes[:, 3] - boxes[:, 1])
                         > 64
                     )
                 ]
 
-        return image_1, boxes_1
+        return image, boxes
 
     def load_stitch(self, index):
         """load 4 images and stitch them"""
         stitch_labels = []
-        s = IMG_SIZE
+        margin = self.img_size // 8
         yc, xc = [
-            int(random.uniform(-x, 2 * s + x)) for x in [-s // 2, -s // 2]
+            int(random.uniform((0 + margin), (self.img_size - margin)))
+            for x in range(0, 2)
         ]
         indices = [index] + [self.get_rand_index() for _ in range(3)]
         pad = 64
@@ -334,7 +381,9 @@ class WheatDatasetEfficientDet(Dataset):
             h, w = img.shape[:2]
             if i == 0:  # top left
                 stitch_image = np.full(
-                    (s * 2, s * 2, img.shape[2]), 0, dtype=np.uint8
+                    (self.img_size, self.img_size, img.shape[2]),
+                    0,
+                    dtype=np.uint8,
                 )
                 xmin, xmax, ymin, ymax = 0, xc, 0, yc
                 limits = xmin, xmax, ymin, ymax
@@ -366,7 +415,7 @@ class WheatDatasetEfficientDet(Dataset):
 
             stitch_image[ymin:ymax, xmin:xmax] = img[ymin:ymax, xmin:xmax]
 
-        return stitch_image, stitch_labels
+        return stitch_image, stitch_labels, "stitched_images"
 
     def get_rand_index(self):
         rand_index = np.random.choice([*range(0, self.image_ids.shape[0] - 1)])
@@ -374,6 +423,7 @@ class WheatDatasetEfficientDet(Dataset):
 
 
 def collate_fn(batch):
+    batch = filter(lambda x: x is not None, batch)
     return tuple(zip(*batch))
 
 
@@ -398,18 +448,18 @@ def crop_boxes_stitch(limits, labels, pad, thresh=0.4) -> numba.float32[:, :]:
 
 @jit(nopython=True)
 def filter_boxes(
-    boxes_1, cutout_ords, reverse=True, thresh=0.33
+    boxes, cutout_ords, reverse=True, thresh=0.33
 ) -> numba.float32[:, :]:
-    boxes_1_copy = np.zeros(boxes_1.shape)
-    for i in range(boxes_1.shape[0]):
-        inter = calculate_intersection(boxes_1[i], cutout_ords)
+    boxes_copy = np.zeros(boxes.shape)
+    for i in range(boxes.shape[0]):
+        inter = calculate_intersection(boxes[i], cutout_ords)
         if not reverse:
             if inter > thresh:
-                boxes_1_copy[i] = boxes_1[i]
+                boxes_copy[i] = boxes[i]
         else:
             if inter < thresh:
-                boxes_1_copy[i] = boxes_1[i]
-    return boxes_1_copy
+                boxes_copy[i] = boxes[i]
+    return boxes_copy
 
 
 @jit(nopython=True)

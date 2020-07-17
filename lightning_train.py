@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import torch
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
@@ -14,16 +15,21 @@ from data_utils.augmentations import get_train_transform, get_valid_transform
 from metrics.kaggle_metric import calculate_image_precision, iou_thresholds
 from net.models import get_train_model
 
-IMG_SIZE = 320
+DIR_INPUT = "./data"
+DIR_TRAIN = f"{DIR_INPUT}/train"
+DIR_TEST = f"{DIR_INPUT}/test"
+train_df = pd.read_csv("./train_df.csv")
+valid_df = pd.read_csv("./valid_df.csv")
 
 
-def get_training_datasets(train_df, valid_df, DIR_TRAIN):
+def get_training_datasets(img_size):
+    global train_df, valid_df, DIR_TRAIN
     datasets = {}
     datasets["train"] = WheatDatasetEfficientDet(
-        train_df, DIR_TRAIN, False, get_train_transform()
+        train_df, img_size, DIR_TRAIN, False, get_train_transform(img_size)
     )
     datasets["valid"] = WheatDatasetEfficientDet(
-        valid_df, DIR_TRAIN, True, get_valid_transform()
+        valid_df, img_size, DIR_TRAIN, True, get_valid_transform(img_size)
     )
     return datasets
 
@@ -32,13 +38,15 @@ class LightningWheat(LightningModule):
     def __init__(self, model_name=None, hparams=None):
         super(LightningWheat, self).__init__()
         self.hparams = hparams
-        self.model = get_train_model(model_name)
+        self.model = get_train_model(
+            model_name, self.hparams["img_size"], useGN=self.hparams["use_gn"]
+        )
 
     def forward(self, images, targets):
         return self.model(images, targets)
 
     def prepare_data(self):
-        datasets = get_training_datasets()
+        datasets = get_training_datasets(self.hparams["img_size"])
         self.train_dataset = datasets["train"]
         self.valid_dataset = datasets["valid"]
 
@@ -95,12 +103,12 @@ class LightningWheat(LightningModule):
         img_scales = [
             img_scale["img_scale"].type(torch.float32) for img_scale in targets
         ]
-        t = {}
-        t["bbox"] = boxes
-        t["cls"] = labels
-        t["img_scale"] = img_scales
-        t["img_size"] = img_sizes
-        loss_dict = self.model(images, t)
+        targets = {}
+        targets["bbox"] = boxes
+        targets["cls"] = labels
+        targets["img_scale"] = img_scales
+        targets["img_size"] = img_sizes
+        loss_dict = self.model(images, targets)
         losses = loss_dict["loss"]
         tensorboard_logs = {"train_loss": loss_dict["loss"]}
         return {
@@ -120,14 +128,16 @@ class LightningWheat(LightningModule):
         img_scales = torch.tensor([1] * images.shape[0], dtype=torch.float32)
         img_scales = img_scales.type_as(boxes[0])
         img_sizes = torch.ones((2,), dtype=torch.float32, device=self.device)
-        img_sizes = img_sizes.new_full((images.shape[0], 2), float(IMG_SIZE))
+        img_sizes = img_sizes.new_full(
+            (images.shape[0], 2), float(self.hparams["img_size"])
+        )
         img_sizes = img_sizes.type_as(boxes[0])
-        t = {}
-        t["bbox"] = boxes
-        t["cls"] = labels
-        t["img_scale"] = img_scales
-        t["img_size"] = img_sizes
-        outputs = self.model(images, t)
+        targets = {}
+        targets["bbox"] = boxes
+        targets["cls"] = labels
+        targets["img_scale"] = img_scales
+        targets["img_size"] = img_sizes
+        outputs = self.model(images, targets)
         loss = float(outputs["loss"])
         validation_image_precisions = []
         for i in range(images.shape[0]):
@@ -167,30 +177,35 @@ class LightningWheat(LightningModule):
 def main(args):
     dict_args = vars(args)
     FLAGS = {}
-    FLAGS["num_workers"] = 4
-    FLAGS["batch_size"] = 2
-    FLAGS["accumulation_steps"] = 16
-    FLAGS["learning_rate"] = 2e-3
-    FLAGS["weight_decay"] = 3e-3
-    FLAGS["num_epochs"] = 125
+    FLAGS["num_workers"] = dict_args["num_workers"]
+    FLAGS["batch_size"] = dict_args["batch_size"]
+    FLAGS["accumulation_steps"] = dict_args["acc_steps"]
+    FLAGS["learning_rate"] = dict_args["lr"]
+    FLAGS["weight_decay"] = dict_args["weight_decay"]
+    FLAGS["num_epochs"] = dict_args["num_epochs"]
     FLAGS["exp_name"] = dict_args["model_name"]
-    FLAGS["fold"] = "0, 1, 2, 3"
-    FLAGS["scheduler_pat"] = 7
+    FLAGS["fold"] = dict_args["folds"]  # "0, 1, 2, 3"
+    FLAGS["scheduler_pat"] = dict_args["scheduler_patience"]
+    FLAGS["img_size"] = dict_args["img_size"]
+    FLAGS["use_gn"] = dict_args["use_gn"]
 
     model = LightningWheat(model_name=dict_args["model_name"], hparams=FLAGS)
     checkpoint_callback = ModelCheckpoint(
-        filepath='./{epoch}-{avg_score:.5f}',
-        monitor='avg_score',
-        mode='max',
+        filepath="./model_{epoch}-{avg_score:.5f}",
+        monitor="avg_score",
+        mode="max",
+        save_last=True,
+        save_weights_only=True,
     )
     tb_logger = TensorBoardLogger(save_dir="./lightning_logs")
     trainer = Trainer(
-        logger=[tb_logger],
-        checkpoint_callback=checkpoint_callback,
         gpus=1,
+        deterministic=True,
+        logger=[tb_logger],
         max_epochs=125,
+        accumulate_grad_batches=FLAGS["accumulation_steps"],
         weights_summary="top",
-        accumulate_grad_batches=4,
+        checkpoint_callback=checkpoint_callback,
     )
     trainer.fit(model)
 
@@ -199,15 +214,59 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser = Trainer.add_argparse_args(parser)
 
-    # figure out which model to use
     parser.add_argument(
         "--model_name",
         type=str,
         default="tf_efficientdet_d1",
         help="format: tf_efficientdet_d[x] where x isin [0:7]",
     )
-
+    parser.add_argument(
+        "--use_gn",
+        type=bool,
+        default=True,
+        help="use GroupNorm instead of BatchNorm",
+    )
+    parser.add_argument(
+        "--img_size", type=int, default=1024, help="train image size",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="number of workers in dataloader",
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=2, help="batch size",
+    )
+    parser.add_argument(
+        "--acc_steps",
+        type=int,
+        default=16,
+        help="gradient accumulation steps",
+    )
+    parser.add_argument(
+        "--lr", type=int, default=0.22, help="learning rate",
+    )
+    parser.add_argument(
+        "--weight_decay", type=int, default=3e-3, help="weight decay",
+    )
+    parser.add_argument(
+        "--num_epochs", type=int, default=125, help="number of epochs",
+    )
+    parser.add_argument(
+        "--scheduler_patience", type=int, default=7, help="scheduler patience",
+    )
+    parser.add_argument(
+        "--folds",
+        type=str,
+        default="0, 1, 2, 3",
+        help="folds being used to train (for logging)",
+    )
+    parser.add_argument(
+        "--log_neptune",
+        type=str,
+        default='none',
+        help="key for logging to Neptune",
+    )
     args = parser.parse_args()
-
-    # train
     main(args)

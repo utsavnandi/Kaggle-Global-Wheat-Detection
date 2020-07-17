@@ -2,7 +2,7 @@ import re
 import numpy as np
 import pandas as pd
 
-train_df = pd.read_csv("train.csv")
+train_df = pd.read_csv("./data/train.csv")
 
 train_df["x"] = -1
 train_df["y"] = -1

@@ -5,6 +5,7 @@ pip install -U git+https://github.com/lessw2020/Ranger-Deep-Learning-Optimizer -
 pip install -U git+https://github.com/rwightman/efficientdet-pytorch -q
 pip install -U git+https://github.com/rwightman/pytorch-image-models -q
 pip install --upgrade omegaconf -q
+pip install pytorch-lightning -q
 pip install neptune-client -q
 mkdir ~/.kaggle/
 cp ./kaggle.json ~/.kaggle/kaggle.json

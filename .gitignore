@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+notebooks/
+data/
 output/
 develop-eggs/
 dist/
@@ -131,3 +133,5 @@ dmypy.json
 
 *.key
 *.csv
+
+*.drawio
