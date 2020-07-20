@@ -9,6 +9,7 @@ from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.logging.neptune import NeptuneLogger
 
 from data_utils.dataset import WheatDatasetEfficientDet, collate_fn
 from data_utils.augmentations import get_train_transform, get_valid_transform
@@ -191,18 +192,30 @@ def main(args):
 
     model = LightningWheat(model_name=dict_args["model_name"], hparams=FLAGS)
     checkpoint_callback = ModelCheckpoint(
-        filepath="./model_{epoch}-{avg_score:.5f}",
+        filepath="./"+dict_args["model_name"]+"_{epoch}-{avg_score:.5f}",
         monitor="avg_score",
         mode="max",
         save_last=True,
         save_weights_only=True,
+        save_top_k=3
     )
+    loggers = []
     tb_logger = TensorBoardLogger(save_dir="./lightning_logs")
+    loggers.append(tb_logger)
+    if dict['neptune_key'] != 'none':
+        neptune_logger = NeptuneLogger(
+            api_key=dict['log_neptune'],
+            project_name="utsav/wheat-det",
+            params=FLAGS,
+            tags=["pytorch-lightning"]
+        )
+        loggers.append(neptune_logger)
     trainer = Trainer(
-        gpus=1,
+        gpus=dict_args['gpus'],
+        distributed_backend=dict_args['distributed_backend'],
         deterministic=True,
-        logger=[tb_logger],
-        max_epochs=125,
+        logger=loggers,
+        max_epochs=FLAGS["num_epochs"],
         accumulate_grad_batches=FLAGS["accumulation_steps"],
         weights_summary="top",
         checkpoint_callback=checkpoint_callback,
@@ -213,7 +226,6 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser = Trainer.add_argparse_args(parser)
-
     parser.add_argument(
         "--model_name",
         type=str,
@@ -263,7 +275,7 @@ if __name__ == "__main__":
         help="folds being used to train (for logging)",
     )
     parser.add_argument(
-        "--log_neptune",
+        "--neptune_key",
         type=str,
         default='none',
         help="key for logging to Neptune",
