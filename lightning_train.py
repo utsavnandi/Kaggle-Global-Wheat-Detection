@@ -202,9 +202,9 @@ def main(args):
     loggers = []
     tb_logger = TensorBoardLogger(save_dir="./lightning_logs")
     loggers.append(tb_logger)
-    if dict['neptune_key'] != 'none':
+    if dict_args['neptune_key'] != 'none':
         neptune_logger = NeptuneLogger(
-            api_key=dict['log_neptune'],
+            api_key=dict_args['log_neptune'],
             project_name="utsav/wheat-det",
             params=FLAGS,
             tags=["pytorch-lightning"]
