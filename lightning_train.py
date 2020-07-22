@@ -204,7 +204,7 @@ def main(args):
     loggers.append(tb_logger)
     if dict_args['neptune_key'] != 'none':
         neptune_logger = NeptuneLogger(
-            api_key=dict_args['log_neptune'],
+            api_key=dict_args['neptune_key'],
             project_name="utsav/wheat-det",
             params=FLAGS,
             tags=["pytorch-lightning"]
@@ -214,6 +214,8 @@ def main(args):
         gpus=dict_args['gpus'],
         distributed_backend=dict_args['distributed_backend'],
         deterministic=True,
+        benchmark=False,
+        progress_bar_refresh_rate=200,
         logger=loggers,
         max_epochs=FLAGS["num_epochs"],
         accumulate_grad_batches=FLAGS["accumulation_steps"],
@@ -257,10 +259,10 @@ if __name__ == "__main__":
         help="gradient accumulation steps",
     )
     parser.add_argument(
-        "--lr", type=int, default=0.22, help="learning rate",
+        "--lr", type=float, default=0.22, help="learning rate",
     )
     parser.add_argument(
-        "--weight_decay", type=int, default=3e-3, help="weight decay",
+        "--weight_decay", type=float, default=3e-3, help="weight decay",
     )
     parser.add_argument(
         "--num_epochs", type=int, default=125, help="number of epochs",
